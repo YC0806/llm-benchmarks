@@ -1154,6 +1154,57 @@ def process_statistics(
         print(TEXT_SEPARATOR)
 
     if excel_output:
+        try:
+            import xlsxwriter  # noqa: F401
+        except ImportError:
+            logger.error(
+                f"{Color.RED}Excel export requires xlsxwriter. "
+                f"Install it with: pip install xlsxwriter{Color.RESET}"
+            )
+            logger.info(
+                f"{Color.YELLOW}Falling back to CSV export instead...{Color.RESET}"
+            )
+            # Fallback to CSV export
+            prefix = f"statistics_{test_params['num_clients']}_clients"
+            filename = get_filename_with_timestamp(prefix, "csv")
+
+            # Export all data to CSV files
+            csv_base = filename.replace('.csv', '')
+
+            # Export test parameters
+            test_params_df = pd.DataFrame([test_params])
+            test_params_df.to_csv(f"{csv_base}_params.csv", index=False)
+
+            # Export generation parameters if available
+            if gen_conv_args is not None:
+                gen_params = {
+                    "text_files": ", ".join(gen_conv_args.text_files),
+                    "input_num_turns": str(gen_conv_args.input_num_turns),
+                    "input_common_prefix_num_tokens": str(
+                        gen_conv_args.input_common_prefix_num_tokens
+                    ),
+                    "input_prefix_num_tokens": str(gen_conv_args.input_prefix_num_tokens),
+                    "input_num_tokens": str(gen_conv_args.input_num_tokens),
+                    "output_num_tokens": str(gen_conv_args.output_num_tokens),
+                }
+                gen_params_df = pd.DataFrame([gen_params])
+                gen_params_df.to_csv(f"{csv_base}_gen_params.csv", index=False)
+
+            # Export statistics for each warmup percentage
+            for i, (params, df_stats) in enumerate(zip(params_list, df_list)):
+                df_params = pd.DataFrame([params])
+                df_params.to_csv(f"{csv_base}_stats_{i}_params.csv", index=False)
+                df_stats.to_csv(f"{csv_base}_stats_{i}.csv", index=True)
+
+            # Export raw data
+            raw_data.to_csv(f"{csv_base}_raw_data.csv", index=False)
+
+            logger.info(
+                f"{Color.GREEN}Client metrics exported to CSV files: {csv_base}_*.csv{Color.RESET}"
+            )
+            return
+
+        # Excel export with xlsxwriter
         prefix = f"statistics_{test_params['num_clients']}_clients"
         filename = get_filename_with_timestamp(prefix, "xlsx")
 

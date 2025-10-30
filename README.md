@@ -1,687 +1,313 @@
-# Benchmarking vLLM
+# LLM Benchmarks - Remote API Testing
 
-This README guides you through running benchmark tests with the extensive
-datasets supported on vLLM. It’s a living document, updated as new features and datasets
-become available.
+基于 vLLM 基准测试工具改造的轻量级远程 API 测试框架，无需安装 vLLM。
 
-## Dataset Overview
+## 🎯 特性
 
-<table style="width:100%; border-collapse: collapse;">
-  <thead>
-    <tr>
-      <th style="width:15%; text-align: left;">Dataset</th>
-      <th style="width:10%; text-align: center;">Online</th>
-      <th style="width:10%; text-align: center;">Offline</th>
-      <th style="width:65%; text-align: left;">Data Path</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>ShareGPT</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json</code></td>
-    </tr>
-    <tr>
-      <td><strong>ShareGPT4V (Image)</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td>
-        <code>wget https://huggingface.co/datasets/Lin-Chen/ShareGPT4V/blob/main/sharegpt4v_instruct_gpt4-vision_cap100k.json</code>
-        <br>
-        <div>Note that the images need to be downloaded separately. For example, to download COCO's 2017 Train images:</div>
-        <code>wget http://images.cocodataset.org/zips/train2017.zip</code>
-      </td>
-    </tr>
-    <tr>
-      <td><strong>BurstGPT</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>wget https://github.com/HPMLL/BurstGPT/releases/download/v1.1/BurstGPT_without_fails_2.csv</code></td>
-    </tr>
-    <tr>
-      <td><strong>Sonnet (deprecated)</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td>Local file: <code>benchmarks/sonnet.txt</code></td>
-    </tr>
-    <tr>
-      <td><strong>Random</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>synthetic</code></td>
-    </tr>
-    <tr>
-      <td><strong>Prefix Repetition</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>synthetic</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-VisionArena</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>lmarena-ai/VisionArena-Chat</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-InstructCoder</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>likaixin/InstructCoder</code></td>
-    </tr>
-      <tr>
-      <td><strong>HuggingFace-AIMO</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>AI-MO/aimo-validation-aime</code> , <code>AI-MO/NuminaMath-1.5</code>, <code>AI-MO/NuminaMath-CoT</code></td>
-    </tr>
-    <tr>
-      <td><strong>HuggingFace-Other</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td><code>lmms-lab/LLaVA-OneVision-Data</code>, <code>Aeala/ShareGPT_Vicuna_unfiltered</code></td>
-    </tr>
-    <tr>
-      <td><strong>Custom</strong></td>
-      <td style="text-align: center;">✅</td>
-      <td style="text-align: center;">✅</td>
-      <td>Local file: <code>data.jsonl</code></td>
-    </tr>
-  </tbody>
-</table>
+- ✅ **零 vLLM 依赖**：专注于远程 API 测试，不需要本地模型部署
+- ✅ **多后端支持**：OpenAI、vLLM Server、TGI、TensorRT-LLM 等
+- ✅ **丰富的数据集**：ShareGPT、Random、HuggingFace 等
+- ✅ **全面的指标**：TTFT、TPOT、ITL、E2EL、吞吐量等
+- ✅ **并发测试**：支持多客户端并发、多轮对话测试
+- ✅ **灵活的请求速率控制**：固定速率、Poisson 过程、线性/指数递增
 
-✅: supported
+## 📦 安装
 
-🟡: Partial support
-
-🚧: to be supported
-
-**Note**: HuggingFace dataset's `dataset-name` should be set to `hf`
-
-## 🚀 Example - Online Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
-First start serving your model
-
+### 最小化安装（仅 4 个依赖）⭐
 ```bash
-vllm serve NousResearch/Hermes-3-Llama-3.1-8B
+pip install numpy pandas aiohttp tqdm
 ```
+> 注意：Token 统计将使用 API 响应数据或字符估算（误差约 ±10-20%）
 
-Then run the benchmarking script
-
+### 推荐安装（包含精确 token 计数）
 ```bash
-# download dataset
-# wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
-vllm bench serve \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --endpoint /v1/completions \
-  --dataset-name sharegpt \
-  --dataset-path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --num-prompts 10
+pip install numpy pandas aiohttp tqdm transformers
 ```
 
-If successful, you will see the following output
+### 可选依赖
 
-```text
-============ Serving Benchmark Result ============
-Successful requests:                     10
-Benchmark duration (s):                  5.78
-Total input tokens:                      1369
-Total generated tokens:                  2212
-Request throughput (req/s):              1.73
-Output token throughput (tok/s):         382.89
-Total Token throughput (tok/s):          619.85
----------------Time to First Token----------------
-Mean TTFT (ms):                          71.54
-Median TTFT (ms):                        73.88
-P99 TTFT (ms):                           79.49
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          7.91
-Median TPOT (ms):                        7.96
-P99 TPOT (ms):                           8.03
----------------Inter-token Latency----------------
-Mean ITL (ms):                           7.74
-Median ITL (ms):                         7.70
-P99 ITL (ms):                            8.39
-==================================================
-```
-
-### Custom Dataset
-
-If the dataset you want to benchmark is not supported yet in vLLM, even then you can benchmark on it using `CustomDataset`. Your data needs to be in `.jsonl` format and needs to have "prompt" field per entry, e.g., data.jsonl
-
-```json
-{"prompt": "What is the capital of India?"}
-{"prompt": "What is the capital of Iran?"}
-{"prompt": "What is the capital of China?"}
-```
-
+**Excel 导出**（多轮测试）：
 ```bash
-# start server
-VLLM_USE_V1=1 vllm serve meta-llama/Llama-3.1-8B-Instruct
+pip install xlsxwriter
 ```
+> 注意：如果不安装 xlsxwriter，使用 `--excel-output` 时会自动降级到 CSV 导出
 
+**图像模型测试**：
 ```bash
-# run benchmarking script
-vllm bench serve --port 9001 --save-result --save-detailed \
-  --backend vllm \
-  --model meta-llama/Llama-3.1-8B-Instruct \
-  --endpoint /v1/completions \
-  --dataset-name custom \
-  --dataset-path <path-to-your-data-jsonl> \
-  --custom-skip-chat-template \
-  --num-prompts 80 \
-  --max-concurrency 1 \
-  --temperature=0.3 \
-  --top-p=0.75 \
-  --result-dir "./log/"
+pip install Pillow datasets
 ```
 
-You can skip applying chat template if your data already has it by using `--custom-skip-chat-template`.
-
-### VisionArena Benchmark for Vision Language Models
-
+**音频模型测试**：
 ```bash
-# need a model with vision capability here
-vllm serve Qwen/Qwen2-VL-7B-Instruct
+pip install soundfile librosa
 ```
 
+## 🚀 快速开始
+
+### 1. 测试 OpenAI API
 ```bash
-vllm bench serve \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path lmarena-ai/VisionArena-Chat \
-  --hf-split train \
-  --num-prompts 1000
-```
+export OPENAI_API_KEY="your-api-key"
 
-### InstructCoder Benchmark with Speculative Decoding
-
-``` bash
-VLLM_USE_V1=1 vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
-    --speculative-config $'{"method": "ngram",
-    "num_speculative_tokens": 5, "prompt_lookup_max": 5,
-    "prompt_lookup_min": 2}'
-```
-
-``` bash
-vllm bench serve \
-    --model meta-llama/Meta-Llama-3-8B-Instruct \
-    --dataset-name hf \
-    --dataset-path likaixin/InstructCoder \
-    --num-prompts 2048
-```
-
-### Other HuggingFaceDataset Examples
-
-```bash
-vllm serve Qwen/Qwen2-VL-7B-Instruct
-```
-
-`lmms-lab/LLaVA-OneVision-Data`:
-
-```bash
-vllm bench serve \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path lmms-lab/LLaVA-OneVision-Data \
-  --hf-split train \
-  --hf-subset "chart2text(cauldron)" \
-  --num-prompts 10
-```
-
-`Aeala/ShareGPT_Vicuna_unfiltered`:
-
-```bash
-vllm bench serve \
-  --backend openai-chat \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --endpoint /v1/chat/completions \
-  --dataset-name hf \
-  --dataset-path Aeala/ShareGPT_Vicuna_unfiltered \
-  --hf-split train \
-  --num-prompts 10
-```
-
-`AI-MO/aimo-validation-aime`:
-
-``` bash
-vllm bench serve \
-    --model Qwen/QwQ-32B \
-    --dataset-name hf \
-    --dataset-path AI-MO/aimo-validation-aime \
+python benchmark_serving.py \
+    --backend openai-chat \
+    --model gpt-4 \
+    --base-url https://api.openai.com \
+    --dataset-name random \
     --num-prompts 10 \
-    --seed 42
+    --request-rate 1
 ```
 
-`philschmid/mt-bench`:
-
-``` bash
-vllm bench serve \
-    --model Qwen/QwQ-32B \
-    --dataset-name hf \
-    --dataset-path philschmid/mt-bench \
-    --num-prompts 80
-```
-
-### Running With Sampling Parameters
-
-When using OpenAI-compatible backends such as `vllm`, optional sampling
-parameters can be specified. Example client command:
-
+### 2. 测试 vLLM 服务器
 ```bash
-vllm bench serve \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --endpoint /v1/completions \
-  --dataset-name sharegpt \
-  --dataset-path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --top-k 10 \
-  --top-p 0.9 \
-  --temperature 0.5 \
-  --num-prompts 10
+# 假设你的 vLLM 服务器运行在 http://localhost:8000
+python benchmark_serving.py \
+    --backend vllm \
+    --model meta-llama/Llama-2-7b-hf \
+    --base-url http://localhost:8000 \
+    --dataset-name sharegpt \
+    --dataset-path ./data/sharegpt.json \
+    --num-prompts 100 \
+    --request-rate 10
 ```
 
-### Running With Ramp-Up Request Rate
+### 3. 使用自定义数据集
+创建 `custom_prompts.jsonl`：
+```jsonl
+{"prompt": "What is the capital of France?"}
+{"prompt": "Explain quantum computing in simple terms."}
+{"prompt": "Write a haiku about coding."}
+```
 
-The benchmark tool also supports ramping up the request rate over the
-duration of the benchmark run. This can be useful for stress testing the
-server or finding the maximum throughput that it can handle, given some latency budget.
-
-Two ramp-up strategies are supported:
-
-- `linear`: Increases the request rate linearly from a start value to an end value.
-- `exponential`: Increases the request rate exponentially.
-
-The following arguments can be used to control the ramp-up:
-
-- `--ramp-up-strategy`: The ramp-up strategy to use (`linear` or `exponential`).
-- `--ramp-up-start-rps`: The request rate at the beginning of the benchmark.
-- `--ramp-up-end-rps`: The request rate at the end of the benchmark.
-
-</details>
-
-## 📈 Example - Offline Throughput Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
+运行测试：
 ```bash
-vllm bench throughput \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset-name sonnet \
-  --dataset-path vllm/benchmarks/sonnet.txt \
-  --num-prompts 10
+python benchmark_serving.py \
+    --backend openai-chat \
+    --model gpt-4 \
+    --base-url https://api.openai.com \
+    --dataset-name custom \
+    --dataset-path ./custom_prompts.jsonl \
+    --num-prompts 3
 ```
 
-If successful, you will see the following output
-
-```text
-Throughput: 7.15 requests/s, 4656.00 total tokens/s, 1072.15 output tokens/s
-Total num prompt tokens:  5014
-Total num output tokens:  1500
-```
-
-### VisionArena Benchmark for Vision Language Models
-
+### 4. 多轮对话测试
 ```bash
-vllm bench throughput \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path lmarena-ai/VisionArena-Chat \
-  --num-prompts 1000 \
-  --hf-split train
+python multi_turn/benchmark_serving_multi_turn.py \
+    -i ./data/conversations.json \
+    -m gpt-4 \
+    -u https://api.openai.com \
+    -p 4 \
+    --request-rate 2 \
+    --excel-output
 ```
 
-The `num prompt tokens` now includes image token counts
+## 📊 支持的后端
 
-```text
-Throughput: 2.55 requests/s, 4036.92 total tokens/s, 326.90 output tokens/s
-Total num prompt tokens:  14527
-Total num output tokens:  1280
-```
+| 后端 | 参数值 | 说明 |
+|------|--------|------|
+| OpenAI Completions | `openai` | OpenAI 标准完成 API |
+| OpenAI Chat | `openai-chat` | OpenAI 聊天完成 API |
+| OpenAI Audio | `openai-audio` | OpenAI 语音识别 API |
+| vLLM Server | `vllm` | vLLM OpenAI 兼容服务器 |
+| TGI | `tgi` | HuggingFace Text Generation Inference |
+| TensorRT-LLM | `tensorrt-llm` | NVIDIA TensorRT-LLM |
+| LMDeploy | `lmdeploy` | LMDeploy 服务器 |
+| SGLang | `sglang` | SGLang 服务器 |
+| llama.cpp | `llama.cpp` | llama.cpp 服务器 |
+| DeepSpeed-MII | `deepspeed-mii` | DeepSpeed MII 服务器 |
+| ScaleLLM | `scalellm` | ScaleLLM 服务器 |
 
-### InstructCoder Benchmark with Speculative Decoding
+## 📁 数据集类型
 
-``` bash
-VLLM_WORKER_MULTIPROC_METHOD=spawn \
-VLLM_USE_V1=1 \
-vllm bench throughput \
-    --dataset-name=hf \
-    --dataset-path=likaixin/InstructCoder \
-    --model=meta-llama/Meta-Llama-3-8B-Instruct \
-    --input-len=1000 \
-    --output-len=100 \
-    --num-prompts=2048 \
-    --async-engine \
-    --speculative-config $'{"method": "ngram",
-    "num_speculative_tokens": 5, "prompt_lookup_max": 5,
-    "prompt_lookup_min": 2}'
-```
+| 数据集 | 参数值 | 说明 |
+|--------|--------|------|
+| Random | `random` | 随机生成的合成数据 |
+| ShareGPT | `sharegpt` | ShareGPT 对话数据 |
+| Sonnet | `sonnet` | 诗歌文本数据 |
+| BurstGPT | `burstgpt` | 突发请求模式数据 |
+| Custom | `custom` | 自定义 JSONL 格式 |
+| HuggingFace | `hf` | HuggingFace 数据集 |
 
-```text
-Throughput: 104.77 requests/s, 23836.22 total tokens/s, 10477.10 output tokens/s
-Total num prompt tokens:  261136
-Total num output tokens:  204800
-```
+## 📈 基准测试指标
 
-### Other HuggingFaceDataset Examples
+- **TTFT** (Time to First Token): 首个 token 生成时间
+- **TPOT** (Time per Output Token): 每个输出 token 平均时间
+- **ITL** (Inter-token Latency): token 间延迟
+- **E2EL** (End-to-end Latency): 端到端延迟
+- **Throughput**: 吞吐量（tokens/s 或 requests/s）
+- **Goodput**: 满足 SLO 的请求吞吐量
 
-`lmms-lab/LLaVA-OneVision-Data`:
+## 🔧 常用参数
 
+### 基础参数
 ```bash
-vllm bench throughput \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path lmms-lab/LLaVA-OneVision-Data \
-  --hf-split train \
-  --hf-subset "chart2text(cauldron)" \
-  --num-prompts 10
+--backend <backend>           # 后端类型
+--model <model_name>          # 模型名称
+--base-url <url>              # API 基础 URL
+--dataset-name <name>         # 数据集类型
+--dataset-path <path>         # 数据集路径（如需要）
 ```
 
-`Aeala/ShareGPT_Vicuna_unfiltered`:
-
+### 性能控制
 ```bash
-vllm bench throughput \
-  --model Qwen/Qwen2-VL-7B-Instruct \
-  --backend vllm-chat \
-  --dataset-name hf \
-  --dataset-path Aeala/ShareGPT_Vicuna_unfiltered \
-  --hf-split train \
-  --num-prompts 10
+--num-prompts <n>             # 请求数量
+--request-rate <rate>         # 请求速率（RPS），inf 表示无限制
+--max-concurrency <n>         # 最大并发请求数
+--burstiness <factor>         # 突发因子（1.0 = Poisson）
 ```
 
-`AI-MO/aimo-validation-aime`:
-
+### 请求速率递增
 ```bash
-vllm bench throughput \
-  --model Qwen/QwQ-32B \
-  --backend vllm \
-  --dataset-name hf \
-  --dataset-path AI-MO/aimo-validation-aime \
-  --hf-split train \
-  --num-prompts 10
+--ramp-up-strategy <strategy> # linear 或 exponential
+--ramp-up-start-rps <n>       # 起始 RPS
+--ramp-up-end-rps <n>         # 结束 RPS
 ```
 
-Benchmark with LoRA adapters:
-
-``` bash
-# download dataset
-# wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
-vllm bench throughput \
-  --model meta-llama/Llama-2-7b-hf \
-  --backend vllm \
-  --dataset_path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --dataset_name sharegpt \
-  --num-prompts 10 \
-  --max-loras 2 \
-  --max-lora-rank 8 \
-  --enable-lora \
-  --lora-path yard1/llama-2-7b-sql-lora-test
-  ```
-
-</details>
-
-## 🛠️ Example - Structured Output Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
-Benchmark the performance of structured output generation (JSON, grammar, regex).
-
-### Server Setup
-
+### 输出控制
 ```bash
-vllm serve NousResearch/Hermes-3-Llama-3.1-8B
+--save-result                 # 保存结果到 JSON
+--result-dir <dir>            # 结果保存目录
+--result-filename <name>      # 结果文件名
+--disable-tqdm                # 禁用进度条
 ```
 
-### JSON Schema Benchmark
-
+### Tokenizer 配置
 ```bash
-python3 benchmarks/benchmark_serving_structured_output.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset json \
-  --structured-output-ratio 1.0 \
-  --request-rate 10 \
-  --num-prompts 1000
+--tokenizer <path>            # Tokenizer 路径（可选）
+--tokenizer-mode <mode>       # auto（默认）或 slow
+--trust-remote-code           # 信任远程代码（Tokenizer）
 ```
 
-### Grammar-based Generation Benchmark
+## 💡 高级用法
 
+### 1. 性能压测（最大吞吐量）
 ```bash
-python3 benchmarks/benchmark_serving_structured_output.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset grammar \
-  --structure-type grammar \
-  --request-rate 10 \
-  --num-prompts 1000
+python benchmark_serving.py \
+    --backend vllm \
+    --model meta-llama/Llama-2-7b-hf \
+    --base-url http://localhost:8000 \
+    --dataset-name random \
+    --num-prompts 1000 \
+    --request-rate inf \
+    --max-concurrency 100
 ```
 
-### Regex-based Generation Benchmark
-
+### 2. 稳定性测试（固定速率）
 ```bash
-python3 benchmarks/benchmark_serving_structured_output.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset regex \
-  --request-rate 10 \
-  --num-prompts 1000
+python benchmark_serving.py \
+    --backend openai-chat \
+    --model gpt-4 \
+    --base-url https://api.openai.com \
+    --dataset-name sharegpt \
+    --dataset-path ./data/sharegpt.json \
+    --num-prompts 500 \
+    --request-rate 10 \
+    --burstiness 1.0
 ```
 
-### Choice-based Generation Benchmark
-
+### 3. 渐进式压测（流量递增）
 ```bash
-python3 benchmarks/benchmark_serving_structured_output.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset choice \
-  --request-rate 10 \
-  --num-prompts 1000
+python benchmark_serving.py \
+    --backend vllm \
+    --model meta-llama/Llama-2-7b-hf \
+    --base-url http://localhost:8000 \
+    --dataset-name random \
+    --num-prompts 1000 \
+    --ramp-up-strategy linear \
+    --ramp-up-start-rps 1 \
+    --ramp-up-end-rps 50
 ```
 
-### XGrammar Benchmark Dataset
-
+### 4. Goodput 测试（SLO 约束）
 ```bash
-python3 benchmarks/benchmark_serving_structured_output.py \
-  --backend vllm \
-  --model NousResearch/Hermes-3-Llama-3.1-8B \
-  --dataset xgrammar_bench \
-  --request-rate 10 \
-  --num-prompts 1000
+python benchmark_serving.py \
+    --backend vllm \
+    --model meta-llama/Llama-2-7b-hf \
+    --base-url http://localhost:8000 \
+    --dataset-name sharegpt \
+    --dataset-path ./data/sharegpt.json \
+    --num-prompts 200 \
+    --request-rate 10 \
+    --goodput ttft:200 tpot:50 e2el:5000
 ```
 
-</details>
-
-## 📚 Example - Long Document QA Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
-Benchmark the performance of long document question-answering with prefix caching.
-
-### Basic Long Document QA Test
-
+### 5. 多客户端并发测试
 ```bash
-python3 benchmarks/benchmark_long_document_qa_throughput.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --enable-prefix-caching \
-  --num-documents 16 \
-  --document-length 2000 \
-  --output-len 50 \
-  --repeat-count 5
+python multi_turn/benchmark_serving_multi_turn.py \
+    -i ./data/conversations.json \
+    -m gpt-4 \
+    -u https://api.openai.com \
+    -p 10 \
+    -k 50 \
+    --request-rate 5 \
+    --max-num-requests 1000
 ```
 
-### Different Repeat Modes
+## 📝 数据集格式
 
-```bash
-# Random mode (default) - shuffle prompts randomly
-python3 benchmarks/benchmark_long_document_qa_throughput.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --enable-prefix-caching \
-  --num-documents 8 \
-  --document-length 3000 \
-  --repeat-count 3 \
-  --repeat-mode random
-
-# Tile mode - repeat entire prompt list in sequence
-python3 benchmarks/benchmark_long_document_qa_throughput.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --enable-prefix-caching \
-  --num-documents 8 \
-  --document-length 3000 \
-  --repeat-count 3 \
-  --repeat-mode tile
-
-# Interleave mode - repeat each prompt consecutively
-python3 benchmarks/benchmark_long_document_qa_throughput.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --enable-prefix-caching \
-  --num-documents 8 \
-  --document-length 3000 \
-  --repeat-count 3 \
-  --repeat-mode interleave
+### ShareGPT 格式
+```json
+[
+  {
+    "conversations": [
+      {"role": "user", "value": "Hello!"},
+      {"role": "assistant", "value": "Hi! How can I help?"}
+    ]
+  }
+]
 ```
 
-</details>
-
-## 🗂️ Example - Prefix Caching Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
-Benchmark the efficiency of automatic prefix caching.
-
-### Fixed Prompt with Prefix Caching
-
-```bash
-python3 benchmarks/benchmark_prefix_caching.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --enable-prefix-caching \
-  --num-prompts 1 \
-  --repeat-count 100 \
-  --input-length-range 128:256
+### Custom 格式（JSONL）
+```jsonl
+{"prompt": "Question 1"}
+{"prompt": "Question 2"}
+{"prompt": "Question 3"}
 ```
 
-### ShareGPT Dataset with Prefix Caching
+## 🐛 故障排除
 
-```bash
-# download dataset
-# wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+### 问题：找不到 vLLM 模块
+这是正常的！本项目已移除 vLLM 依赖，不需要安装 vLLM。
 
-python3 benchmarks/benchmark_prefix_caching.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --dataset-path /path/ShareGPT_V3_unfiltered_cleaned_split.json \
-  --enable-prefix-caching \
-  --num-prompts 20 \
-  --repeat-count 5 \
-  --input-length-range 128:256
-```
+### 问题：Mistral tokenizer 错误
+**解决方案**：使用 `--tokenizer-mode auto`（默认）或 `--tokenizer-mode slow`
 
-### Prefix Repetition Dataset
+### 问题：连接超时
+**解决方案**：
+1. 检查 `--base-url` 是否正确
+2. 确保 API 服务器正在运行
+3. 检查防火墙设置
 
-```bash
-vllm bench serve \
-  --backend openai \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --dataset-name prefix_repetition \
-  --num-prompts 100 \
-  --prefix-repetition-prefix-len 512 \
-  --prefix-repetition-suffix-len 128 \
-  --prefix-repetition-num-prefixes 5 \
-  --prefix-repetition-output-len 128 
-```
+### 问题：Token 计数不准确
+**解决方案**：使用 `--tokenizer` 参数指定与服务器相同的 tokenizer
 
-</details>
+## 🔄 从 vLLM 版本迁移
 
-## ⚡ Example - Request Prioritization Benchmark
+详见 [VLLM_DEPENDENCY_REMOVAL.md](VLLM_DEPENDENCY_REMOVAL.md)
 
-<details>
-<summary>Show more</summary>
+主要变化：
+- ✅ 不再需要安装 vLLM
+- ✅ 所有远程 API 功能保留
+- ❌ 不支持本地模型部署
+- ❌ 不支持 Mistral tokenizer 模式
+- ❌ 不支持本地 LoRA 适配器
 
-<br/>
+## 📚 参考资料
 
-Benchmark the performance of request prioritization in vLLM.
+- [原始 README（vLLM 版本）](README_original.md)
+- [vLLM 项目](https://github.com/vllm-project/vllm)
+- [OpenAI API 文档](https://platform.openai.com/docs/api-reference)
+- [HuggingFace Transformers](https://huggingface.co/docs/transformers)
 
-### Basic Prioritization Test
+## 🤝 贡献
 
-```bash
-python3 benchmarks/benchmark_prioritization.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --input-len 128 \
-  --output-len 64 \
-  --num-prompts 100 \
-  --scheduling-policy priority
-```
+欢迎提交 Issue 和 Pull Request！
 
-### Multiple Sequences per Prompt
+## 📄 许可证
 
-```bash
-python3 benchmarks/benchmark_prioritization.py \
-  --model meta-llama/Llama-2-7b-chat-hf \
-  --input-len 128 \
-  --output-len 64 \
-  --num-prompts 100 \
-  --scheduling-policy priority \
-  --n 2
-```
+Apache-2.0 License
 
-</details>
+---
 
-## 👁️ Example - Multi-Modal Benchmark
-
-<details>
-<summary>Show more</summary>
-
-<br/>
-
-Benchmark the performance of multi-modal requests in vLLM.
-
-### Images (ShareGPT4V)
-
-Start vLLM:
-
-```bash
-python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen2.5-VL-7B-Instruct \
-  --dtype bfloat16 \
-  --limit-mm-per-prompt '{"image": 1}' \
-  --allowed-local-media-path /path/to/sharegpt4v/images
-```
-
-Send requests with images:
-
-```bash
-python benchmarks/benchmark_serving.py \
-  --backend openai-chat \
-  --model Qwen/Qwen2.5-VL-7B-Instruct \
-  --dataset-name sharegpt \
-  --dataset-path /path/to/ShareGPT4V/sharegpt4v_instruct_gpt4-vision_cap100k.json \
-  --num-prompts 100 \
-  --save-result \
-  --result-dir ~/vllm_benchmark_results \
-  --save-detailed \
-  --endpoint /v1/chat/completion
-```
-
-</details>
+**项目状态**: 活跃开发中
+**最后更新**: 2025-10-28
+**版本**: 2.0 (vLLM-free)

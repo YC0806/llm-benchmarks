@@ -36,7 +36,6 @@ from typing import Any, Literal, Optional
 
 import numpy as np
 from tqdm.asyncio import tqdm
-from transformers import PreTrainedTokenizerBase
 from typing_extensions import deprecated
 
 from backend_request_func import (
@@ -44,38 +43,95 @@ from backend_request_func import (
     OPENAI_COMPATIBLE_BACKENDS,
     RequestFuncInput,
     RequestFuncOutput,
+    estimate_token_count,
 )
 
-try:
-    from vllm.transformers_utils.tokenizer import get_tokenizer
-except ImportError:
-    from backend_request_func import get_tokenizer
-
-try:
-    from vllm.utils import FlexibleArgumentParser
-except ImportError:
-    from argparse import ArgumentParser as FlexibleArgumentParser
+from argparse import ArgumentParser as FlexibleArgumentParser
 
 from benchmark_dataset import (
-    AIMODataset,
-    ASRDataset,
-    BurstGPTDataset,
-    ConversationDataset,
     CustomDataset,
-    HuggingFaceDataset,
-    InstructCoderDataset,
-    MTBenchDataset,
-    NextEditPredictionDataset,
-    RandomDataset,
+    CustomMessagesDataset,
     SampleRequest,
-    ShareGPTDataset,
     SonnetDataset,
-    VisionArenaDataset,
 )
 from benchmark_utils import convert_to_pytorch_benchmark_format, write_to_json
-from vllm.benchmarks.serve import get_request
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+# Replacement for vllm.benchmarks.serve.get_request
+async def get_request(
+    input_requests: list,
+    request_rate: float,
+    burstiness: float = 1.0,
+    ramp_up_strategy: Optional[Literal["linear", "exponential"]] = None,
+    ramp_up_start_rps: Optional[int] = None,
+    ramp_up_end_rps: Optional[int] = None,
+):
+    """
+    Generator that yields requests with controlled rate.
+
+    Args:
+        input_requests: List of requests to process
+        request_rate: Target request rate (requests per second)
+        burstiness: Burstiness factor (1.0 = Poisson process)
+        ramp_up_strategy: Optional ramp-up strategy ("linear" or "exponential")
+        ramp_up_start_rps: Starting RPS for ramp-up
+        ramp_up_end_rps: Ending RPS for ramp-up
+
+    Yields:
+        Tuple of (request, current_request_rate)
+    """
+    import asyncio
+
+    if request_rate == float("inf"):
+        # Send all requests immediately
+        for request in input_requests:
+            yield request, request_rate
+        return
+
+    # Calculate total duration based on request rate
+    total_requests = len(input_requests)
+
+    if ramp_up_strategy is not None:
+        # Ramp-up mode
+        assert ramp_up_start_rps is not None and ramp_up_end_rps is not None
+
+        if ramp_up_strategy == "linear":
+            # Linear ramp-up
+            for i, request in enumerate(input_requests):
+                progress = i / total_requests
+                current_rps = ramp_up_start_rps + (ramp_up_end_rps - ramp_up_start_rps) * progress
+                interval = 1.0 / current_rps if current_rps > 0 else 0
+                await asyncio.sleep(interval)
+                yield request, current_rps
+
+        elif ramp_up_strategy == "exponential":
+            # Exponential ramp-up
+            import math
+            for i, request in enumerate(input_requests):
+                progress = i / total_requests
+                # Exponential interpolation
+                log_start = math.log(ramp_up_start_rps)
+                log_end = math.log(ramp_up_end_rps)
+                current_rps = math.exp(log_start + (log_end - log_start) * progress)
+                interval = 1.0 / current_rps if current_rps > 0 else 0
+                await asyncio.sleep(interval)
+                yield request, current_rps
+    else:
+        # Fixed rate mode with Poisson or Gamma distribution
+        for request in input_requests:
+            if burstiness == 1.0:
+                # Poisson process (exponential distribution)
+                interval = np.random.exponential(1.0 / request_rate)
+            else:
+                # Gamma distribution for burstiness
+                shape = 1.0 / burstiness
+                scale = burstiness / request_rate
+                interval = np.random.gamma(shape, scale)
+
+            await asyncio.sleep(interval)
+            yield request, request_rate
 
 
 @dataclass
@@ -112,7 +168,6 @@ def calculate_metrics(
     input_requests: list[SampleRequest],
     outputs: list[RequestFuncOutput],
     dur_s: float,
-    tokenizer: PreTrainedTokenizerBase,
     selected_percentile_metrics: list[str],
     selected_percentiles: list[float],
     goodput_config_dict: dict[str, float],
@@ -131,16 +186,10 @@ def calculate_metrics(
             output_len = outputs[i].output_tokens
 
             if not output_len:
-                # We use the tokenizer to count the number of output tokens
-                # for some serving backends instead of looking at
-                # len(outputs[i].itl) since multiple output tokens may be
-                # bundled together
-                # Note : this may inflate the output token count slightly
-                output_len = len(
-                    tokenizer(
-                        outputs[i].generated_text, add_special_tokens=False
-                    ).input_ids
-                )
+                # Token count not provided by API, estimate based on character count
+                # Note: This is an approximation (±10-20% error)
+                # Prefer APIs that return token counts in responses
+                output_len = estimate_token_count(outputs[i].generated_text)
             actual_output_lens.append(output_len)
             total_input += input_requests[i].prompt_len
             tpot = 0
@@ -232,7 +281,6 @@ async def benchmark(
     base_url: str,
     model_id: str,
     model_name: str,
-    tokenizer: PreTrainedTokenizerBase,
     input_requests: list[SampleRequest],
     logprobs: Optional[int],
     request_rate: float,
@@ -411,7 +459,6 @@ async def benchmark(
         input_requests=input_requests,
         outputs=outputs,
         dur_s=benchmark_duration,
-        tokenizer=tokenizer,
         selected_percentile_metrics=selected_percentile_metrics,
         selected_percentiles=selected_percentiles,
         goodput_config_dict=goodput_config_dict,
@@ -646,11 +693,10 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(
-        tokenizer_id,
-        tokenizer_mode=tokenizer_mode,
-        trust_remote_code=args.trust_remote_code,
-    )
+    # NOTE: Tokenizer dependency completely removed
+    # Token counting uses:
+    # 1. Token counts from API responses (most accurate)
+    # 2. Character-based estimation as fallback
 
     if args.dataset_name is None:
         raise ValueError(
@@ -662,7 +708,14 @@ def main(args: argparse.Namespace):
         dataset = CustomDataset(dataset_path=args.dataset_path)
         input_requests = dataset.sample(
             num_requests=args.num_prompts,
-            tokenizer=tokenizer,
+            output_len=args.custom_output_len,
+            skip_chat_template=args.custom_skip_chat_template,
+        )
+    
+    elif args.dataset_name == "custom-messages":
+        dataset = CustomMessagesDataset(dataset_path=args.dataset_path)
+        input_requests = dataset.sample(
+            num_requests=args.num_prompts,
             output_len=args.custom_output_len,
             skip_chat_template=args.custom_skip_chat_template,
         )
@@ -676,110 +729,23 @@ def main(args: argparse.Namespace):
                 input_len=args.sonnet_input_len,
                 output_len=args.sonnet_output_len,
                 prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
                 return_prompt_formatted=False,
             )
         else:
-            assert tokenizer.chat_template or tokenizer.default_chat_template, (
-                "Tokenizer/model must have chat template for sonnet dataset."
-            )
-            input_requests = dataset.sample(
-                num_requests=args.num_prompts,
-                input_len=args.sonnet_input_len,
-                output_len=args.sonnet_output_len,
-                prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
-                return_prompt_formatted=True,
-            )
-
-    elif args.dataset_name == "hf":
-        # all following datasets are implemented from the
-        # HuggingFaceDataset base class
-        if args.dataset_path in VisionArenaDataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = VisionArenaDataset
-            args.hf_split = "train"
-            args.hf_subset = None
-        elif args.dataset_path in InstructCoderDataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = InstructCoderDataset
-            args.hf_split = "train"
-        elif args.dataset_path in MTBenchDataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = MTBenchDataset
-            args.hf_split = "train"
-        elif args.dataset_path in ConversationDataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = ConversationDataset
-        elif args.dataset_path in AIMODataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = AIMODataset
-            args.hf_split = "train"
-        elif args.dataset_path in NextEditPredictionDataset.SUPPORTED_DATASET_PATHS:  # noqa: E501
-            dataset_class = NextEditPredictionDataset
-            args.hf_split = "train"
-        elif args.dataset_path in ASRDataset.SUPPORTED_DATASET_PATHS:
-            dataset_class = ASRDataset
-            args.hf_split = "train"
-        else:
-            supported_datasets = set(
-                [
-                    dataset_name
-                    for cls in HuggingFaceDataset.__subclasses__()
-                    for dataset_name in cls.SUPPORTED_DATASET_PATHS
-                ]
-            )
             raise ValueError(
-                f"Unsupported dataset path: {args.dataset_path}. "
-                "Huggingface dataset only supports dataset_path"
-                f" from one of following: {supported_datasets}. "
-                "Please consider contributing if you would "
-                "like to add support for additional dataset formats."
+                "Sonnet dataset only supports 'openai-chat' backend in offline mode. "
+                "For other backends, use 'custom' dataset with your own JSONL file."
             )
-
-        if dataset_class.IS_MULTIMODAL and backend not in [
-            "openai-chat",
-            "openai-audio",
-        ]:
-            # multi-modal benchmark is only available on OpenAI Chat backend.
-            raise ValueError(
-                "Multi-modal content is only supported on 'openai-chat' and "
-                "'openai-audio' backend."
-            )
-        input_requests = dataset_class(
-            dataset_path=args.dataset_path,
-            dataset_subset=args.hf_subset,
-            dataset_split=args.hf_split,
-            random_seed=args.seed,
-            no_stream=args.no_stream,
-        ).sample(
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            output_len=args.hf_output_len,
-        )
 
     else:
-        # For datasets that follow a similar structure, use a mapping.
-        dataset_mapping = {
-            "sharegpt": lambda: ShareGPTDataset(
-                random_seed=args.seed, dataset_path=args.dataset_path
-            ).sample(
-                tokenizer=tokenizer,
-                num_requests=args.num_prompts,
-                output_len=args.sharegpt_output_len,
-            ),
-            "burstgpt": lambda: BurstGPTDataset(
-                random_seed=args.seed, dataset_path=args.dataset_path
-            ).sample(tokenizer=tokenizer, num_requests=args.num_prompts),
-            "random": lambda: RandomDataset(dataset_path=args.dataset_path).sample(
-                tokenizer=tokenizer,
-                num_requests=args.num_prompts,
-                prefix_len=args.random_prefix_len,
-                input_len=args.random_input_len,
-                output_len=args.random_output_len,
-                range_ratio=args.random_range_ratio,
-            ),
-        }
-
-        try:
-            input_requests = dataset_mapping[args.dataset_name]()
-        except KeyError as err:
-            raise ValueError(f"Unknown dataset: {args.dataset_name}") from err
+        # NOTE: HuggingFace datasets and other datasets requiring external downloads
+        # have been disabled for offline/air-gapped environments.
+        # Only 'custom' and 'sonnet' (with openai-chat backend) are supported.
+        raise ValueError(
+            f"Unsupported dataset: {args.dataset_name}. "
+            "In offline mode, only 'custom' and 'sonnet' datasets are supported. "
+            "Use 'custom' dataset with your own JSONL file for testing."
+        )
     goodput_config_dict = check_goodput_args(args)
 
     # Collect the sampling parameters.
@@ -818,7 +784,6 @@ def main(args: argparse.Namespace):
             base_url=base_url,
             model_id=model_id,
             model_name=model_name,
-            tokenizer=tokenizer,
             input_requests=input_requests,
             logprobs=args.logprobs,
             request_rate=args.request_rate,
@@ -945,7 +910,7 @@ def create_argument_parser():
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom"],
+        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom","custom-messages"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -983,7 +948,7 @@ def create_argument_parser():
     parser.add_argument(
         "--tokenizer",
         type=str,
-        help="Name or path of the tokenizer, if not using the default tokenizer.",  # noqa: E501
+        help="[DEPRECATED] Tokenizer dependency has been removed. This argument is kept for compatibility but is no longer used.",  # noqa: E501
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(

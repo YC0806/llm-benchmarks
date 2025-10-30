@@ -1,5 +1,9 @@
+# Required dependencies
 numpy>=1.24
 pandas>=2.0.0
 aiohttp>=3.10
 transformers>=4.46
-xlsxwriter>=3.2.1
+tqdm>=4.66
+
+# Optional: Excel export (CSV export works without this)
+# xlsxwriter>=3.2.1
